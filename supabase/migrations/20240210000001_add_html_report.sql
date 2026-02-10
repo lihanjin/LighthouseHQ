@@ -1,0 +1,1 @@
+ALTER TABLE reports ADD COLUMN IF NOT EXISTS html_report TEXT;
