@@ -4,6 +4,7 @@ import ProjectDetail from "@/pages/ProjectDetail";
 import ProjectPages from "@/pages/ProjectPages";
 import ProjectPageForm from "@/pages/ProjectPageForm";
 import TaskDetail from "@/pages/TaskDetail";
+import ReportDetail from "@/pages/ReportDetail";
 import { Layout } from "antd";
 
 const { Header, Content } = Layout;
@@ -25,6 +26,7 @@ export default function App() {
             <Route path="/projects/:id/pages/edit" element={<ProjectPageForm />} />
             <Route path="/projects/:id/settings" element={<ProjectDetail />} />
             <Route path="/tasks/:id" element={<TaskDetail />} />
+            <Route path="/reports/:reportId" element={<ReportDetail />} />
           </Routes>
         </Content>
       </Layout>

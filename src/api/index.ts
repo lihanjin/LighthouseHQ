@@ -18,6 +18,10 @@ export const api = {
       const res = await fetch(`${API_BASE_URL}/projects/${id}`)
       return res.json()
     },
+    getReportJson: async (reportId: string) => {
+      const res = await fetch(`${API_BASE_URL}/reports/${reportId}?format=json`)
+      return res.json()
+    },
     update: async (id: string, data: any) => {
       const res = await fetch(`${API_BASE_URL}/projects/${id}`, {
         method: 'PUT',

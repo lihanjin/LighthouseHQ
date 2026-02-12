@@ -24,25 +24,8 @@ const { Text, Title } = Typography
 // --- Configuration & Helpers ---
 
 const METRIC_CONFIG = {
-    good: {
-        label: 'Good Core Web Vitals (CrUX)',
-        unit: '%',
-        ranges: [
-            { label: '< 75%', color: 'bg-red-400', textColor: 'text-red-400', min: -Infinity, max: 75 },
-            { label: '75% - 80%', color: 'bg-orange-400', textColor: 'text-orange-400', min: 75, max: 80 },
-            { label: '> 80%', color: 'bg-green-400', textColor: 'text-green-400', min: 80, max: Infinity }
-        ],
-        getValue: (val: number) => val,
-        format: (val: number) => val + '%',
-        description: [
-            "真实用户体验中，满足 Google 在三项核心网页指标（Core Web Vitals）上“优秀（Good）”阈值的占比。",
-            "至少有 75% 的访问需达到“优秀”，才能获得最大的搜索排名加成。",
-            "数据来自 Google 的 Chrome 用户体验报告（CrUX），并以最近 28 天的平均值计算。",
-            "若需查看这三项指标的整体平均表现，请参考 Good Avg（CrUX）指标。"
-        ]
-    },
     fcp: {
-        label: 'First Contentful Paint',
+        label: '首次内容绘制（FCP）',
         unit: 's',
         ranges: [
             { label: '< 1.8 s', color: 'bg-green-400', textColor: 'text-green-400', min: -Infinity, max: 1800 },
@@ -99,6 +82,21 @@ const METRIC_CONFIG = {
         description: [
             "Page Weight（页面体量）衡量页面加载时需要下载的资源大小，例如图片或 JavaScript 文件。"
         ]
+    },
+    tbt: {
+        label: 'Total Blocking Time',
+        unit: 'ms',
+        ranges: [
+            { label: '< 200 ms', color: 'bg-green-400', textColor: 'text-green-400', min: -Infinity, max: 200 },
+            { label: '200 ms - 600 ms', color: 'bg-orange-400', textColor: 'text-orange-400', min: 200, max: 600 },
+            { label: '> 600 ms', color: 'bg-red-400', textColor: 'text-red-400', min: 600, max: Infinity }
+        ],
+        getValue: (val: number) => val, // ms
+        format: (val: number) => `${Math.round(val)} ms`,
+        description: [
+            "TBT（Total Blocking Time，总阻塞时间）衡量主线程在页面加载期间被长任务阻塞的总时长。",
+            "它与交互响应延迟强相关，值越低越好。"
+        ]
     }
 }
 
@@ -130,14 +128,12 @@ interface MetricCellProps {
 const MetricCell = ({ type, history, currentValue, currentDate }: MetricCellProps) => {
     const config = METRIC_CONFIG[type]
     
-    // Fill history to 10 slots if needed, or just show what we have
-    // We want to show a sparkline. If history is empty, show empty slots?
-    // User images show populated bars.
-    
-    // Reverse history to show oldest -> newest (left -> right)
-    // The prop history is expected to be [newest, ..., oldest] or similar?
-    // Let's assume passed history is already sorted Oldest -> Newest for rendering
     const displayHistory = history.slice(-10) 
+    
+    // Find max value in current history to normalize heights
+    // For metrics like CLS, we want to see relative changes clearly
+    const allValues = displayHistory.map(h => h.value).filter(v => v !== null && !isNaN(v))
+    const maxValue = allValues.length > 0 ? Math.max(...allValues) : 0
     
     const TooltipContent = () => (
         <div className="flex flex-col gap-2 min-w-[200px] p-1">
@@ -172,31 +168,45 @@ const MetricCell = ({ type, history, currentValue, currentDate }: MetricCellProp
     )
 
     return (
-        <Tooltip title={<TooltipContent />} color="white" overlayInnerStyle={{ color: 'black', padding: '12px' }} placement="top">
+        <Tooltip title={<TooltipContent />} color="white" styles={{ container: { color: 'black', padding: '12px' } }} placement="top">
             <div className="flex flex-col w-full max-w-[140px] cursor-pointer group">
                 {/* Sparkline */}
-                <div className="flex gap-1 mb-1 h-8 items-end">
-                    {/* Render up to 10 bars */}
+                <div className="flex gap-[3px] mb-1 h-8 items-end">
+                    {/* Render up to 10 slots */}
                     {Array.from({ length: 10 }).map((_, i) => {
-                        // Map visual index to history index
-                        // We align right.
+                        // Map visual index to history index (align right)
                         const historyIndex = displayHistory.length - (10 - i)
                         const dataPoint = historyIndex >= 0 ? displayHistory[historyIndex] : null
-                        
-                        const isCurrent = i === 9 // Last bar
-                        const color = dataPoint ? (isCurrent ? getMetricColor(type, dataPoint.value) : 'bg-gray-200') : 'bg-gray-50'
-                        
-                        // Calculate height based on relative value? Or just full height?
-                        // Images show full height bars.
-                        const height = '100%' 
-                        
-                        return (
-                            <div 
-                                key={i} 
-                                className={`flex-1 rounded-sm ${color} transition-colors`}
-                                style={{ height }}
-                            />
-                        )
+
+                        if (dataPoint) {
+                            const color = getMetricColor(type, dataPoint.value)
+                            // Calculate relative height (min 30% for bars with data)
+                            let height = '100%'
+                            if (maxValue > 0) {
+                                const ratio = dataPoint.value / maxValue
+                                height = `${Math.max(ratio * 100, 30)}%`
+                            }
+                            
+                            return (
+                                <Tooltip 
+                                    key={i} 
+                                    title={`${config.label}: ${config.format(dataPoint.value)} (${dayjs(dataPoint.date).format('D MMM HH:mm')})`}
+                                >
+                                    <div 
+                                        className={`flex-1 rounded-[2px] ${color} transition-all duration-300 opacity-90 hover:opacity-100`}
+                                        style={{ height }}
+                                    />
+                                </Tooltip>
+                            )
+                        } else {
+                            // Small gray dots for empty slots as seen in reference
+                            return (
+                                <div 
+                                    key={i} 
+                                    className="flex-1 h-1 rounded-full bg-gray-100 mb-[2px]" 
+                                />
+                            )
+                        }
                     })}
                 </div>
                 {/* Value Text */}
@@ -229,7 +239,7 @@ const HeaderWithTooltip = ({ title, metricKey }: { title: string, metricKey: Met
     return (
         <div className="flex items-center gap-1 cursor-help">
             <span>{title}</span>
-            <Tooltip title={<TooltipContent />} color="white" overlayInnerStyle={{ color: 'black', padding: '12px' }}>
+            <Tooltip title={<TooltipContent />} color="white" styles={{ container: { color: 'black', padding: '12px' } }}>
                 <QuestionCircleOutlined className="text-blue-400" />
             </Tooltip>
         </div>
@@ -341,6 +351,8 @@ interface PageMetrics {
         lcp: { value: number | null, history: any[] };
         cls: { value: number | null, history: any[] };
         pageWeight: { value: number | null, history: any[] };
+        tbt: { value: number | null, history: any[] };
+        reportId: string | null;
         screenshot: string | null;
         date: string | null;
     };
@@ -370,6 +382,15 @@ export default function ProjectPages() {
     return () => clearInterval(interval)
   }, [id])
 
+  // Auto-refresh when task completes
+  useEffect(() => {
+    if (project?.runningTask === null && running) {
+      console.log('Task just finished, forcing refresh...')
+      fetchProject(true)
+    }
+    setRunning(!!project?.runningTask)
+  }, [project?.runningTask])
+
   const fetchProject = async (showLoading = true) => {
     if (showLoading) setLoading(true)
     try {
@@ -382,9 +403,6 @@ export default function ProjectPages() {
         const config = res.data.default_config || {}
         
         // Helper to transform array to StorageItem format if needed, or init empty
-        // Assuming backend stores as array of objects: [{name/key, value}, ...]
-        // We map to {id, key, value} for the editor
-        
         const transform = (arr: any[], keyField: string = 'key') => 
             Array.isArray(arr) ? arr.map((item, idx) => ({ 
                 id: Date.now() + idx + Math.random().toString(), 
@@ -534,6 +552,11 @@ export default function ProjectPages() {
             value: report ? report.total_byte_weight : null, 
             history: extractHistory('total_byte_weight') 
         },
+        tbt: {
+            value: report ? report.tbt : null,
+            history: extractHistory('tbt')
+        },
+        reportId: report?.id || null,
         screenshot: report?.screenshot || null,
         date: report?.created_at || null
     }
@@ -674,9 +697,9 @@ export default function ProjectPages() {
                 <span>页面</span>
             </div>
             <div className="col-span-8 grid grid-cols-5 gap-4">
-                <HeaderWithTooltip title="GOOD (CRUX)" metricKey="good" />
                 <HeaderWithTooltip title="FCP" metricKey="fcp" />
                 <HeaderWithTooltip title="LCP" metricKey="lcp" />
+                <HeaderWithTooltip title="TBT" metricKey="tbt" />
                 <HeaderWithTooltip title="CLS" metricKey="cls" />
                 <HeaderWithTooltip title="PAGE WEIGHT" metricKey="pageWeight" />
             </div>
@@ -718,6 +741,15 @@ export default function ProjectPages() {
                                         {page.title ? `${page.title}` : page.url.replace(/^https?:\/\//, '').split('/')[0]}
                                     </Text>
                                     <Button type="text" size="small" icon={<EditOutlined />} onClick={() => handleEditPage(page.urlIndex)} />
+                                    {page.metrics.reportId && (
+                                        <Button 
+                                            type="link" 
+                                            size="small" 
+                                            onClick={() => navigate(`/reports/${page.metrics.reportId}`)}
+                                        >
+                                            查看详情
+                                        </Button>
+                                    )}
                                     <Tooltip title="删除页面">
                                         <Button type="text" size="small" danger icon={<DeleteOutlined />} onClick={() => handleDelete(page.url)} />
                                     </Tooltip>
@@ -741,9 +773,9 @@ export default function ProjectPages() {
                         </div>
 
                         <div className="col-span-8 grid grid-cols-5 gap-4">
-                            <MetricCell type="good" history={page.metrics.good.history} currentValue={page.metrics.good.value} currentDate={page.metrics.date} />
                             <MetricCell type="fcp" history={page.metrics.fcp.history} currentValue={page.metrics.fcp.value} currentDate={page.metrics.date} />
                             <MetricCell type="lcp" history={page.metrics.lcp.history} currentValue={page.metrics.lcp.value} currentDate={page.metrics.date} />
+                            <MetricCell type="tbt" history={page.metrics.tbt?.history || []} currentValue={page.metrics.tbt?.value ?? null} currentDate={page.metrics.date} />
                             <MetricCell type="cls" history={page.metrics.cls.history} currentValue={page.metrics.cls.value} currentDate={page.metrics.date} />
                             <MetricCell type="pageWeight" history={page.metrics.pageWeight.history} currentValue={page.metrics.pageWeight.value} currentDate={page.metrics.date} />
                         </div>
@@ -760,7 +792,13 @@ export default function ProjectPages() {
       </div>
       
       {/* Batch Edit Modal */}
-      <Modal title="批量编辑" open={isEditModalVisible} onOk={submitBatchEdit} onCancel={() => setIsEditModalVisible(false)}>
+      <Modal 
+          title="批量编辑" 
+          open={isEditModalVisible} 
+          onOk={submitBatchEdit} 
+          onCancel={() => setIsEditModalVisible(false)}
+          destroyOnClose={false}
+      >
           <Form form={form} layout="vertical">
               <Form.Item name="device" label="设备类型">
                   <Select mode="multiple">
@@ -778,6 +816,7 @@ export default function ProjectPages() {
           onOk={handleSettingsSave} 
           onCancel={() => setIsSettingsModalVisible(false)}
           width={700}
+          destroyOnClose={false}
       >
           <Form form={settingsForm} layout="vertical">
               <Tabs defaultActiveKey="cookies" items={[

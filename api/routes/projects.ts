@@ -7,26 +7,31 @@ const router = Router()
 router.get('/', async (req, res) => {
   const { data: projects, error } = await supabase
     .from('projects')
-    .select('*')
+    .select('id, name, description, urls, default_config, created_at, updated_at')
     .order('created_at', { ascending: false })
 
   if (error) {
     return res.status(500).json({ success: false, error: error.message })
   }
 
-  // Fetch stats from view
+  const projectIds = projects.map(p => p.id)
+
+  // Fetch stats from view only for relevant projects
   const { data: stats } = await supabase
     .from('project_latest_stats')
     .select('*')
+    .in('project_id', projectIds)
+
+  const statsMap = new Map(stats?.map(s => [s.project_id, s]))
 
   const projectsWithStats = projects.map(p => {
-    const s = stats?.find((x: any) => x.project_id === p.id)
+    const s: any = statsMap.get(p.id)
     return {
       ...p,
       stats: s ? {
         performance: s.avg_performance,
         lcp: s.avg_lcp,
-        fid: s.avg_tbt, // Mapping TBT to FID for UI consistency (Lab data proxy)
+        fid: s.avg_tbt,
         cls: s.avg_cls,
         weight: s.avg_weight,
         lastRunAt: s.last_run_at
@@ -179,7 +184,7 @@ router.get('/:id', async (req, res) => {
     
     const { data: reports } = await supabase
       .from('reports')
-      .select('*')
+      .select('id, task_id, url, device, location, status, error_message, created_at, performance_score, accessibility_score, best_practices_score, seo_score, lcp, tbt, cls, fcp, speed_index, total_byte_weight, screenshot')
       .in('task_id', taskIds)
       .order('created_at', { ascending: false })
       

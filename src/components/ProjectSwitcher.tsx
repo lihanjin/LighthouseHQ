@@ -49,12 +49,12 @@ export default function ProjectSwitcher() {
       }
       style={{ width: 240 }}
       className="project-switcher"
-      bordered={true}
+      variant="outlined"
       showSearch
       filterOption={(input, option) =>
         (option?.children as unknown as string).toLowerCase().indexOf(input.toLowerCase()) >= 0
       }
-      dropdownRender={menu => (
+      popupRender={menu => (
         <>
           {menu}
           <Divider style={{ margin: '8px 0' }} />
