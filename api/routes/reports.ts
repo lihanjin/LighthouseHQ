@@ -1,5 +1,7 @@
 import { Router } from 'express'
-import { supabase } from '../lib/supabase.js'
+import { db } from '../db.js'
+import { reports } from '../schema.js'
+import { eq } from 'drizzle-orm'
 
 const router = Router()
 
@@ -9,28 +11,57 @@ router.get('/:id', async (req, res) => {
   const { format, translate } = req.query
 
   if (format === 'json') {
-    const { data, error } = await supabase
-      .from('reports')
-      .select('id, task_id, url, device, location, status, error_message, created_at, performance_score, accessibility_score, best_practices_score, seo_score, fcp, lcp, tbt, cls, speed_index, total_byte_weight, screenshot, lighthouse_data')
-      .eq('id', id)
-      .single()
+    try {
+      const rows = await db
+        .select({
+          id: reports.id,
+          task_id: reports.taskId,
+          url: reports.url,
+          device: reports.device,
+          location: reports.location,
+          status: reports.status,
+          error_message: reports.errorMessage,
+          created_at: reports.createdAt,
+          performance_score: reports.performanceScore,
+          accessibility_score: reports.accessibilityScore,
+          best_practices_score: reports.bestPracticesScore,
+          seo_score: reports.seoScore,
+          fcp: reports.fcp,
+          lcp: reports.lcp,
+          tbt: reports.tbt,
+          cls: reports.cls,
+          speed_index: reports.speedIndex,
+          total_byte_weight: reports.totalByteWeight,
+          screenshot: reports.screenshot,
+          lighthouse_data: reports.lighthouseData,
+        })
+        .from(reports)
+        .where(eq(reports.id, id))
+        .limit(1)
 
-    if (error || !data) {
-      return res.status(404).json({ success: false, error: 'Report not found' })
+      const data = rows[0]
+      if (!data) return res.status(404).json({ success: false, error: 'Report not found' })
+      return res.json({ success: true, data })
+    } catch (error: any) {
+      console.error('Failed to get report json', error)
+      return res.status(500).json({ success: false, error: error.message || 'Failed to get report' })
     }
-
-    return res.json({ success: true, data })
   }
   
-  const { data, error } = await supabase
-    .from('reports')
-    .select('html_report')
-    .eq('id', id)
-    .single()
-
-  if (error || !data) {
-    return res.status(404).send('Report not found')
+  let data: { html_report: string | null } | undefined
+  try {
+    const rows = await db
+      .select({ html_report: reports.htmlReport })
+      .from(reports)
+      .where(eq(reports.id, id))
+      .limit(1)
+    data = rows[0]
+  } catch (error: any) {
+    console.error('Failed to get report html', error)
+    return res.status(500).send('Failed to get report')
   }
+
+  if (!data?.html_report) return res.status(404).send('Report not found')
 
   // Directly return the HTML string for iframe rendering
   res.setHeader('Content-Type', 'text/html')

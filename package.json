@@ -4,6 +4,7 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
+    "start": "npm run dev",
     "client:dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
@@ -14,13 +15,13 @@
   },
   "dependencies": {
     "@ant-design/icons": "^6.1.0",
-    "@supabase/supabase-js": "^2.95.3",
     "antd": "^6.2.3",
     "clsx": "^2.1.1",
     "cors": "^2.8.5",
     "dayjs": "^1.11.19",
     "dotenv": "^17.2.1",
     "express": "^4.21.2",
+    "drizzle-orm": "^0.38.0",
     "lighthouse": "^13.0.2",
     "lucide-react": "^0.511.0",
     "p-queue": "^9.1.0",
@@ -31,7 +32,9 @@
     "recharts": "^3.7.0",
     "tailwind-merge": "^3.0.2",
     "tsx": "^4.21.0",
-    "zustand": "^5.0.3"
+    "zustand": "^5.0.3",
+    "@neondatabase/serverless": "^0.10.4",
+    "pg": "^8.13.1"
   },
   "devDependencies": {
     "@eslint/js": "^9.25.0",
@@ -56,6 +59,7 @@
     "typescript-eslint": "^8.30.1",
     "vite": "^6.3.5",
     "vite-plugin-trae-solo-badge": "^1.0.0",
-    "vite-tsconfig-paths": "^5.1.4"
+    "vite-tsconfig-paths": "^5.1.4",
+    "drizzle-kit": "^0.30.0"
   }
 }

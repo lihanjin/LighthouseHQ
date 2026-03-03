@@ -7,13 +7,34 @@ import { api } from '../api'
 const { Title } = Typography
 const { Option } = Select
 
+interface ProjectUrlItem {
+  url: string
+  title?: string
+}
+
+interface ProjectConfig {
+  device?: string[]
+  location?: string[] | string
+  cookies?: unknown
+  localStorage?: unknown
+  sessionStorage?: unknown
+}
+
+interface Project {
+  id: string
+  name: string
+  description?: string | null
+  urls?: (string | ProjectUrlItem)[]
+  default_config?: ProjectConfig
+}
+
 export default function ProjectPageForm() {
   const { id } = useParams()
   const [searchParams] = useSearchParams()
   const navigate = useNavigate()
   const [form] = Form.useForm()
   const [loading, setLoading] = useState(false)
-  const [project, setProject] = useState<any>(null)
+  const [project, setProject] = useState<Project | null>(null)
   
   // Identify if we are editing a specific page (by index for now, as URLs might change)
   const editIndex = searchParams.get('index')
@@ -68,16 +89,21 @@ export default function ProjectPageForm() {
   const handleSubmit = async () => {
     try {
       const values = await form.validateFields()
+
+      if (!project) {
+        message.error('项目信息尚未加载完成，请稍后重试')
+        return
+      }
       setLoading(true)
 
       // 1. Prepare pages
-      const formPages = values.pages.map((p: any) => ({
+      const formPages = values.pages.map((p: ProjectUrlItem) => ({
         url: p.url,
         title: p.title || ''
       }))
 
-      let allPages = []
-      const existingPages = (project.urls || []).map((u: any) => 
+      let allPages: ProjectUrlItem[] = []
+      const existingPages = (project.urls || []).map((u: string | ProjectUrlItem) =>
         typeof u === 'string' ? { url: u, title: '' } : u
       )
 
@@ -122,9 +148,10 @@ export default function ProjectPageForm() {
         message.error(res.error)
       }
 
-    } catch (error: any) {
+    } catch (error) {
       console.error(error)
-      message.error(error.message || '操作失败，请检查输入格式')
+      const err = error as Error
+      message.error(err.message || '操作失败，请检查输入格式')
     } finally {
       setLoading(false)
     }
@@ -141,7 +168,7 @@ export default function ProjectPageForm() {
         <Card>
           <Form form={form} layout="vertical" onFinish={handleSubmit}>
              <Form.List name="pages">
-                {(fields, { add, remove }) => (
+             {(fields, { add, remove }: { add: () => void; remove: (name: number) => void }) => (
                     <>
                         {fields.map(({ key, name, ...restField }) => (
                             <div key={key} className="mb-4 p-4 border border-gray-200 rounded relative bg-gray-50">
@@ -156,15 +183,17 @@ export default function ProjectPageForm() {
                                           if (!value) return Promise.resolve();
 
                                           // Check current form duplicates
-                                          const formPages = form.getFieldValue('pages') || [];
-                                          const duplicateInForm = formPages.filter((p: any) => p?.url === value).length > 1;
+                                          const formPages: ProjectUrlItem[] = form.getFieldValue('pages') || [];
+                                          const duplicateInForm = formPages.filter((p) => p?.url === value).length > 1;
                                           if (duplicateInForm) {
                                             return Promise.reject(new Error('当前列表中存在重复的 URL'));
                                           }
 
                                           // Check project existing duplicates
                                           if (project && project.urls) {
-                                            const existingUrls = project.urls.map((u: any) => typeof u === 'string' ? u : u.url);
+                                            const existingUrls = project.urls.map((u: string | ProjectUrlItem) =>
+                                              typeof u === 'string' ? u : u.url,
+                                            );
                                             
                                             let isDuplicate = false;
                                             if (isEdit && editIndex !== null) {

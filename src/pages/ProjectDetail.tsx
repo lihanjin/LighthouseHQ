@@ -202,7 +202,7 @@ export default function ProjectDetail() {
             </Form.Item>
           </div>
 
-          <Divider orientation="left">认证设置 (可选)</Divider>
+          <Divider titlePlacement="left">认证设置 (可选)</Divider>
           
           <Form.Item name={['config', 'authType']} label="认证方式" initialValue="none">
              <Select>

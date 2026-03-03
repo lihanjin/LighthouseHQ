@@ -2,7 +2,9 @@ import PQueue from 'p-queue'
 import { fork, type ChildProcess } from 'node:child_process'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { supabase } from '../lib/supabase.ts'
+import { db } from '../db.js'
+import { tasks } from '../schema.js'
+import { eq } from 'drizzle-orm'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -39,7 +41,7 @@ export const taskRunner = {
   },
 
   cancelTask: async (taskId: string) => {
-      await supabase.from('tasks').update({ status: 'cancelled' }).eq('id', taskId)
+    await db.update(tasks).set({ status: 'cancelled' }).where(eq(tasks.id, taskId))
       
     const child = runningTasks.get(taskId)
     if (child) {
@@ -55,9 +57,9 @@ export const taskRunner = {
       }, 5000)
 
       runningTasks.delete(taskId)
-    } else {
+      } else {
       console.log(`[Runner] No active child process found for ${taskId}`)
-    }
+      }
   },
 }
 
@@ -91,17 +93,18 @@ async function processTask(config: TaskConfig) {
 
   child.on('error', async (err) => {
     console.error(`[Runner] Child process error for task ${taskId}:`, err)
-    await supabase.from('tasks').update({ status: 'failed' }).eq('id', taskId)
+    await db.update(tasks).set({ status: 'failed' }).where(eq(tasks.id, taskId))
     cleanup()
-  })
+                    })
 
   child.on('exit', async (code, signal) => {
     console.log(`[Runner] Child process exited for task ${taskId} with code ${code} signal ${signal}`)
 
     if (code !== 0 && code !== null) {
-      const { data: task } = await supabase.from('tasks').select('status').eq('id', taskId).single()
+      const rows = await db.select({ status: tasks.status }).from(tasks).where(eq(tasks.id, taskId)).limit(1)
+      const task = rows[0]
       if (task && task.status !== 'completed' && task.status !== 'cancelled') {
-        await supabase.from('tasks').update({ status: 'failed' }).eq('id', taskId)
+        await db.update(tasks).set({ status: 'failed' }).where(eq(tasks.id, taskId))
       }
     }
 

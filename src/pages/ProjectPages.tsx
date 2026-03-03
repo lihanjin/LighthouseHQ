@@ -177,7 +177,7 @@ const MetricCell = ({ type, history, currentValue, currentDate }: MetricCellProp
                         // Map visual index to history index (align right)
                         const historyIndex = displayHistory.length - (10 - i)
                         const dataPoint = historyIndex >= 0 ? displayHistory[historyIndex] : null
-
+                        
                         if (dataPoint) {
                             const color = getMetricColor(type, dataPoint.value)
                             // Calculate relative height (min 30% for bars with data)
@@ -200,12 +200,12 @@ const MetricCell = ({ type, history, currentValue, currentDate }: MetricCellProp
                             )
                         } else {
                             // Small gray dots for empty slots as seen in reference
-                            return (
-                                <div 
-                                    key={i} 
+                        return (
+                            <div 
+                                key={i} 
                                     className="flex-1 h-1 rounded-full bg-gray-100 mb-[2px]" 
-                                />
-                            )
+                            />
+                        )
                         }
                     })}
                 </div>
@@ -514,6 +514,12 @@ export default function ProjectPages() {
   const latestReports = project?.latestReports || []
   const reportsHistory = project?.reportsHistory || {}
 
+  const toNumberOrNull = (v: unknown): number | null => {
+    if (v === null || v === undefined) return null
+    const n = typeof v === 'number' ? v : Number(v)
+    return Number.isFinite(n) ? n : null
+  }
+
   const getMetrics = (url: string, device: string, location: string) => {
     const key = `${url}-${device}-${location}`
     const report = latestReports.find((r: any) => r.url === url && r.device === device && r.location === location)
@@ -524,36 +530,36 @@ export default function ProjectPages() {
 
     // Extract values
     const extractHistory = (field: string) => sortedHistory.map(r => ({
-        value: Number(r[field]),
+        value: toNumberOrNull(r[field]) ?? 0,
         date: r.created_at
     }))
     
     // Good (Performance Score)
-    const goodHistory = sortedHistory.map(r => ({ value: r.performance_score, date: r.created_at }))
+    const goodHistory = sortedHistory.map(r => ({ value: toNumberOrNull(r.performance_score) ?? 0, date: r.created_at }))
     
     return {
         good: { 
-            value: report ? report.performance_score : null, 
+            value: report ? toNumberOrNull(report.performance_score) : null, 
             history: goodHistory 
         },
         fcp: { 
-            value: report ? report.fcp : null, 
+            value: report ? toNumberOrNull(report.fcp) : null, 
             history: extractHistory('fcp') 
         },
         lcp: { 
-            value: report ? report.lcp : null, 
+            value: report ? toNumberOrNull(report.lcp) : null, 
             history: extractHistory('lcp') 
         },
         cls: { 
-            value: report ? report.cls : null, 
+            value: report ? toNumberOrNull(report.cls) : null, 
             history: extractHistory('cls') 
         },
         pageWeight: { 
-            value: report ? report.total_byte_weight : null, 
+            value: report ? toNumberOrNull(report.total_byte_weight) : null, 
             history: extractHistory('total_byte_weight') 
         },
         tbt: {
-            value: report ? report.tbt : null,
+            value: report ? toNumberOrNull(report.tbt) : null,
             history: extractHistory('tbt')
         },
         reportId: report?.id || null,

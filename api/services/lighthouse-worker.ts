@@ -1,7 +1,9 @@
 import puppeteer from 'puppeteer'
 import lighthouse from 'lighthouse'
-import { supabase } from '../lib/supabase.ts'
 import { URL } from 'url'
+import { db } from '../db.js'
+import { reports, tasks } from '../schema.js'
+import { eq, sql } from 'drizzle-orm'
 
 const CRUX_API_KEY = process.env.CRUX_API_KEY || process.env.GOOGLE_API_KEY
 
@@ -62,16 +64,22 @@ async function runTask(config: any) {
   console.log(`[Worker Task ${taskId}] Starting... Global Location: ${globalLocation || 'default'}`)
 
   try {
-    const { data: currentTask } = await supabase.from('tasks').select('status').eq('id', taskId).single()
+    const currentTaskRows = await db
+      .select({ status: tasks.status })
+      .from(tasks)
+      .where(eq(tasks.id, taskId))
+      .limit(1)
+    const currentTask = currentTaskRows[0]
     if (currentTask?.status === 'cancelled' || cancelled) {
       console.log(`[Worker Task ${taskId}] Cancelled before start.`)
       return { taskId, status: 'cancelled' }
     }
 
-    await supabase
-      .from('tasks')
-      .update({ status: 'running', started_at: new Date().toISOString(), progress: 1 })
-      .eq('id', taskId)
+    await db.execute(sql`
+      update tasks
+      set status = 'running', started_at = now(), progress = 1
+      where id = ${taskId}
+    `)
 
     const launchArgs = ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
 
@@ -107,7 +115,12 @@ async function runTask(config: any) {
     for (const rawUrlItem of urls) {
       if (cancelled) throw new Error('Task Cancelled')
 
-      const { data: checkTask } = await supabase.from('tasks').select('status').eq('id', taskId).single()
+      const checkTaskRows = await db
+        .select({ status: tasks.status })
+        .from(tasks)
+        .where(eq(tasks.id, taskId))
+        .limit(1)
+      const checkTask = checkTaskRows[0]
       if (checkTask?.status === 'cancelled') {
         console.log(`[Worker Task ${taskId}] Cancelled during execution.`)
         throw new Error('Task Cancelled')
@@ -156,7 +169,12 @@ async function runTask(config: any) {
         for (const currentDevice of deviceList) {
           if (cancelled) throw new Error('Task Cancelled')
 
-          const { data: checkTaskDevice } = await supabase.from('tasks').select('status').eq('id', taskId).single()
+          const checkTaskDeviceRows = await db
+            .select({ status: tasks.status })
+            .from(tasks)
+            .where(eq(tasks.id, taskId))
+            .limit(1)
+          const checkTaskDevice = checkTaskDeviceRows[0]
           if (checkTaskDevice?.status === 'cancelled') {
             console.log(`[Worker Task ${taskId}] Cancelled during execution (device loop).`)
             throw new Error('Task Cancelled')
@@ -168,21 +186,15 @@ async function runTask(config: any) {
               ? (currentLocation.trim().startsWith('[') ? (() => { try { const parsed = JSON.parse(currentLocation); return Array.isArray(parsed) ? parsed[0] : currentLocation } catch { return currentLocation } })() : currentLocation)
               : String(currentLocation || 'us-east')
 
-          const { data: reportRecord, error: reportError } = await supabase
-            .from('reports')
-            .insert({
-              task_id: taskId,
-              url,
-              device: currentDevice,
-              location: normalizedLocation,
-              status: 'pending',
-              lighthouse_data: {},
-            })
-            .select()
-            .single()
+          const created = (await db.execute(sql`
+            insert into reports (task_id, url, device, location, status, lighthouse_data)
+            values (${taskId}, ${url}, ${currentDevice}, ${normalizedLocation}, 'pending', ${JSON.stringify({})}::jsonb)
+            returning id
+          `)) as unknown as { rows: Array<{ id: string }> }
 
-          if (reportError) {
-            console.error(`[Worker Task ${taskId}] Failed to create report record for ${url} (${currentDevice}):`, reportError)
+          const reportRecord = created.rows?.[0]
+          if (!reportRecord?.id) {
+            console.error(`[Worker Task ${taskId}] Failed to create report record for ${url} (${currentDevice})`)
             continue
           }
 
@@ -284,48 +296,58 @@ async function runTask(config: any) {
 
             const screenshot = report.audits['final-screenshot']?.details?.data
 
-            await supabase
-              .from('reports')
-              .update({
-                lighthouse_data: report,
-                html_report: htmlReport,
-                performance_score: scores.performance,
-                accessibility_score: scores.accessibility,
-                best_practices_score: scores.bestPractices,
-                seo_score: scores.seo,
-                fcp: metrics.fcp,
-                lcp: metrics.lcp,
-                tbt: metrics.tbt,
-                cls: metrics.cls,
-                speed_index: metrics.speed_index,
-                total_byte_weight: metrics.total_byte_weight,
-                status: 'completed',
-                screenshot,
-              })
-              .eq('id', reportRecord.id)
+            await db.execute(sql`
+              update reports
+              set
+                lighthouse_data = ${JSON.stringify(report)}::jsonb,
+                html_report = ${String(htmlReport)},
+                performance_score = ${scores.performance},
+                accessibility_score = ${scores.accessibility},
+                best_practices_score = ${scores.bestPractices},
+                seo_score = ${scores.seo},
+                fcp = ${metrics.fcp ?? null},
+                lcp = ${metrics.lcp ?? null},
+                tbt = ${metrics.tbt ?? null},
+                cls = ${metrics.cls ?? null},
+                speed_index = ${metrics.speed_index ?? null},
+                total_byte_weight = ${metrics.total_byte_weight ?? null},
+                status = 'completed',
+                screenshot = ${screenshot ?? null},
+                error_message = null
+              where id = ${reportRecord.id}
+            `)
           } catch (err: any) {
             if (err?.message === 'Task Cancelled') throw err
             console.error(`[Worker Task ${taskId}] Failed to audit ${url}:`, err)
-            await supabase
-              .from('reports')
-              .update({ status: 'failed', error_message: err?.message || String(err) })
-              .eq('id', reportRecord.id)
+            await db.execute(sql`
+              update reports
+              set status = 'failed', error_message = ${err?.message || String(err)}
+              where id = ${reportRecord.id}
+            `)
           }
 
           completedCount++
           const progress = Math.round((completedCount / totalEstimate) * 100)
-          await supabase.from('tasks').update({ progress }).eq('id', taskId)
+          await db.execute(sql`
+            update tasks set progress = ${progress} where id = ${taskId}
+          `)
         }
       }
     }
 
     if (!cancelled) {
-      const { data: finalCheck } = await supabase.from('tasks').select('status').eq('id', taskId).single()
+      const finalCheckRows = await db
+        .select({ status: tasks.status })
+        .from(tasks)
+        .where(eq(tasks.id, taskId))
+        .limit(1)
+      const finalCheck = finalCheckRows[0]
       if (finalCheck?.status !== 'cancelled') {
-        await supabase
-          .from('tasks')
-          .update({ status: 'completed', completed_at: new Date().toISOString(), progress: 100 })
-          .eq('id', taskId)
+        await db.execute(sql`
+          update tasks
+          set status = 'completed', completed_at = now(), progress = 100
+          where id = ${taskId}
+        `)
         console.log(`[Worker Task ${taskId}] Finished.`)
       }
     }
@@ -338,7 +360,7 @@ async function runTask(config: any) {
     }
 
     console.error(`[Worker Task ${taskId}] Fatal error:`, err)
-    await supabase.from('tasks').update({ status: 'failed' }).eq('id', taskId)
+    await db.execute(sql`update tasks set status = 'failed' where id = ${taskId}`)
     return { taskId, status: 'failed', error: err?.message || String(err) }
   } finally {
     try {

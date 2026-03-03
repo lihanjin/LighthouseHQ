@@ -1,224 +1,275 @@
 import { Router } from 'express'
-import { supabase } from '../lib/supabase.js'
+import { and, desc, eq, inArray, sql } from 'drizzle-orm'
+import { db } from '../db.js'
+import { projects, tasks, reports } from '../schema.js'
+import { taskRunner } from '../services/runner.js'
+import { getOrCreateAdminUserId } from '../services/admin-user.js'
 
 const router = Router()
 
 // Get all projects
 router.get('/', async (req, res) => {
-  const { data: projects, error } = await supabase
-    .from('projects')
-    .select('id, name, description, urls, default_config, created_at, updated_at')
-    .order('created_at', { ascending: false })
+  try {
+    // 查询 projects 列表
+    const projectRows = await db
+      .select({
+        id: projects.id,
+        name: projects.name,
+        description: projects.description,
+        urls: projects.urls,
+        default_config: projects.defaultConfig,
+        created_at: projects.createdAt,
+        updated_at: projects.updatedAt,
+      })
+      .from(projects)
+      .orderBy(desc(projects.createdAt))
 
-  if (error) {
-    return res.status(500).json({ success: false, error: error.message })
-  }
-
-  const projectIds = projects.map(p => p.id)
-
-  // Fetch stats from view only for relevant projects
-  const { data: stats } = await supabase
-    .from('project_latest_stats')
-    .select('*')
-    .in('project_id', projectIds)
-
-  const statsMap = new Map(stats?.map(s => [s.project_id, s]))
-
-  const projectsWithStats = projects.map(p => {
-    const s: any = statsMap.get(p.id)
-    return {
-      ...p,
-      stats: s ? {
-        performance: s.avg_performance,
-        lcp: s.avg_lcp,
-        fid: s.avg_tbt,
-        cls: s.avg_cls,
-        weight: s.avg_weight,
-        lastRunAt: s.last_run_at
-      } : null
+    if (projectRows.length === 0) {
+      return res.json({ success: true, data: [] })
     }
-  })
 
-  res.json({ success: true, data: projectsWithStats })
+    const projectsWithStats = projectRows.map(p => {
+      return {
+        ...p,
+        // 先不从视图聚合统计，后续有需要再用 Drizzle 视图补上
+        stats: null,
+      }
+    })
+
+    res.json({ success: true, data: projectsWithStats })
+  } catch (error) {
+    console.error('Failed to fetch projects with stats', error)
+    const err = error as Error
+    res.status(500).json({ success: false, error: err.message || 'Failed to fetch projects' })
+  }
 })
 
 // Create project
 router.post('/', async (req, res) => {
   const { name, description, urls, config } = req.body
-  
-  // TODO: Get real user ID from auth middleware
-  // For now, fetch the first user (admin)
-  const { data: users } = await supabase.from('users').select('id').limit(1)
-  let userId = users?.[0]?.id
+  try {
+    const userId = await getOrCreateAdminUserId()
+    const urlsJson = JSON.stringify(urls || [])
+    const configJson = JSON.stringify(config || {})
 
-  // If no user exists, create a default admin user
-  if (!userId) {
-    const { data: newUser, error: createError } = await supabase
-      .from('users')
-      .insert({
-        email: 'admin@example.com',
-        password_hash: 'default_hash', // In production, use real hash
-        name: 'Admin',
-        role: 'admin'
-      })
-      .select()
-      .single()
-      
-    if (createError) {
-       console.error('Failed to create default user', createError)
-       return res.status(500).json({ success: false, error: 'Failed to create default user' })
-    }
-    userId = newUser.id
+    const result = (await db.execute(sql`
+      insert into projects (user_id, name, description, urls, default_config)
+      values (${userId}, ${name}, ${description ?? null}, ${urlsJson}::jsonb, ${configJson}::jsonb)
+      returning
+        id,
+        name,
+        description,
+        urls,
+        default_config,
+        created_at,
+        updated_at
+    `)) as unknown as { rows: Record<string, unknown>[] }
+
+    res.json({ success: true, data: result.rows?.[0] ?? null })
+  } catch (error) {
+    console.error('Failed to create project', error)
+    res
+      .status(500)
+      .json({ success: false, error: (error as Error).message || 'Failed to create project' })
   }
-
-  const { data, error } = await supabase
-    .from('projects')
-    .insert({
-      user_id: userId,
-      name,
-      description,
-      urls: urls || [],
-      default_config: config || {},
-    })
-    .select()
-    .single()
-
-  if (error) {
-    return res.status(500).json({ success: false, error: error.message })
-  }
-
-  res.json({ success: true, data })
 })
 
 // Get project details with history stats
 router.get('/:id', async (req, res) => {
   const { id } = req.params
-  
-  // 1. Get project info
-  const { data: project, error: projectError } = await supabase
-    .from('projects')
-    .select('*')
-    .eq('id', id)
-    .single()
+  try {
+    // 1. Get project info
+    const projectRows = await db
+      .select()
+      .from(projects)
+      .where(eq(projects.id, id))
+      .limit(1)
 
-  if (projectError) {
-    return res.status(404).json({ success: false, error: 'Project not found' })
-  }
+    const project = projectRows[0]
 
-  // 2. Get historical reports for this project's tasks
-  // We join tasks -> reports
-  // Since Supabase join syntax can be complex, we'll do two queries or use a view
-  // For simplicity: get last 20 tasks, then get their reports
-  
-  const { data: tasks } = await supabase
-    .from('tasks')
-    .select('id, created_at')
-    .eq('project_id', id)
-    .eq('status', 'completed')
-    .order('created_at', { ascending: false })
-    .limit(20)
+    if (!project) {
+      return res.status(404).json({ success: false, error: 'Project not found' })
+    }
 
-  let history: any[] = []
-  
-  if (tasks && tasks.length > 0) {
-    const taskIds = tasks.map(t => t.id)
-    
-    const { data: reports } = await supabase
-      .from('reports')
-      .select('task_id, url, performance_score, accessibility_score, best_practices_score, seo_score, lcp, tbt, cls, fcp, speed_index, total_byte_weight')
-      .in('task_id', taskIds)
+    // 2. Get historical reports for this project's tasks
+    const taskRows = await db
+      .select({
+        id: tasks.id,
+        created_at: tasks.createdAt,
+        status: tasks.status,
+      })
+      .from(tasks)
+      .where(and(eq(tasks.projectId, id), eq(tasks.status, 'completed')))
+      .orderBy(desc(tasks.createdAt))
+      .limit(20)
 
-    // Group by task to calculate average scores per run
-    const reportsByTask = (reports || []).reduce((acc: any, curr) => {
-      if (!acc[curr.task_id]) acc[curr.task_id] = []
-      acc[curr.task_id].push(curr)
-      return acc
-    }, {})
+    let history: Array<{
+      date: string | Date | null
+      taskId: string
+      performance: number
+      accessibility: number
+      bestPractices: number
+      seo: number
+      lcp: number
+      tbt: number
+      cls: number
+      fcp: number
+      si: number
+      weight: number
+    }> = []
 
-    history = tasks.map(task => {
-        const taskReports = reportsByTask[task.id] || []
-        if (taskReports.length === 0) return null
-        
-        // Calculate averages
-        const avg = (key: string) => {
-            const sum = taskReports.reduce((s: number, r: any) => s + (Number(r[key]) || 0), 0)
+    if (taskRows.length > 0) {
+      const taskIds = taskRows.map((t) => t.id)
+
+      const reportRows = await db
+        .select({
+          task_id: reports.taskId,
+          url: reports.url,
+          performance_score: reports.performanceScore,
+          accessibility_score: reports.accessibilityScore,
+          best_practices_score: reports.bestPracticesScore,
+          seo_score: reports.seoScore,
+          lcp: reports.lcp,
+          tbt: reports.tbt,
+          cls: reports.cls,
+          fcp: reports.fcp,
+          speed_index: reports.speedIndex,
+          total_byte_weight: reports.totalByteWeight,
+        })
+        .from(reports)
+        .where(inArray(reports.taskId, taskIds))
+
+      const reportsByTask = reportRows.reduce((acc: Record<string, Record<string, unknown>[]>, curr) => {
+        if (!acc[curr.task_id]) acc[curr.task_id] = []
+        acc[curr.task_id].push(curr as unknown as Record<string, unknown>)
+        return acc
+      }, {})
+
+      history = taskRows
+        .map((task) => {
+          const taskReports = reportsByTask[task.id] || []
+          if (taskReports.length === 0) return null
+
+          const avg = (key: string) => {
+            const sum = taskReports.reduce(
+              (s: number, r: Record<string, unknown>) =>
+                s + (Number(r[key]) || 0),
+              0,
+            )
             return taskReports.length ? sum / taskReports.length : 0
-        }
-        
-        return {
+          }
+
+          return {
             date: task.created_at,
             taskId: task.id,
             performance: Math.round(avg('performance_score')),
             accessibility: Math.round(avg('accessibility_score')),
             bestPractices: Math.round(avg('best_practices_score')),
             seo: Math.round(avg('seo_score')),
-            // Metrics
             lcp: Number(avg('lcp').toFixed(0)),
             tbt: Number(avg('tbt').toFixed(0)),
             cls: Number(avg('cls').toFixed(3)),
             fcp: Number(avg('fcp').toFixed(0)),
             si: Number(avg('speed_index').toFixed(0)),
-            weight: Number(avg('total_byte_weight').toFixed(0))
-        }
-    }).filter(Boolean).reverse() // Reverse to show chronological order
-  }
+            weight: Number(avg('total_byte_weight').toFixed(0)),
+          }
+        })
+        .filter(Boolean)
+        .reverse()
+    }
 
-  // 3. Get latest reports for "Dashboard" view
-  // We want the latest report for each URL + Device combination
-  // Strategy: Get last 10 tasks (including running ones maybe?), fetch their reports, then dedupe by url+device
-  const { data: recentTasks } = await supabase
-    .from('tasks')
-    .select('id, status, progress, created_at')
-    .eq('project_id', id)
-    .order('created_at', { ascending: false })
-    .limit(10)
+    // 3. Get latest reports for "Dashboard" view
+    const recentTasksRows = await db
+      .select({
+        id: tasks.id,
+        status: tasks.status,
+        progress: tasks.progress,
+        created_at: tasks.createdAt,
+      })
+      .from(tasks)
+      .where(eq(tasks.projectId, id))
+      .orderBy(desc(tasks.createdAt))
+      .limit(10)
 
-  let latestReports: any[] = []
-  let runningTask: any = null
+    type LatestReport = Record<string, unknown>
+    let latestReports: LatestReport[] = []
+    let runningTask: Record<string, unknown> | null = null
+    let reportsHistory: Record<string, LatestReport[]> = {}
 
-  if (recentTasks && recentTasks.length > 0) {
-    // Check for running task
-    runningTask = recentTasks.find(t => t.status === 'running' || t.status === 'pending')
-    
-    const taskIds = recentTasks.map(t => t.id)
-    
-    const { data: reports } = await supabase
-      .from('reports')
-      .select('id, task_id, url, device, location, status, error_message, created_at, performance_score, accessibility_score, best_practices_score, seo_score, lcp, tbt, cls, fcp, speed_index, total_byte_weight, screenshot')
-      .in('task_id', taskIds)
-      .order('created_at', { ascending: false })
-      
-    // Dedupe: keep first occurrence of unique key (url + device)
-    const seen = new Set()
-    latestReports = (reports || []).filter(r => {
-      const key = `${r.url}-${r.device}-${r.location || 'us-east'}`
-      if (seen.has(key)) return false
-      seen.add(key)
-      return true
-    })
+    if (recentTasksRows.length > 0) {
+      runningTask = recentTasksRows.find(
+        (t) => t.status === 'running' || t.status === 'pending',
+      )
 
-    // 4. Group reports by URL+Device+Location for history sparklines
-    // We want the last 10 runs for each page
-    const reportsMap: Record<string, any[]> = {}
-    reports?.forEach(r => {
+      const taskIds = recentTasksRows.map((t) => t.id)
+
+      const reportRows = await db
+        .select({
+          id: reports.id,
+          task_id: reports.taskId,
+          url: reports.url,
+          device: reports.device,
+          location: reports.location,
+          status: reports.status,
+          error_message: reports.errorMessage,
+          created_at: reports.createdAt,
+          performance_score: reports.performanceScore,
+          accessibility_score: reports.accessibilityScore,
+          best_practices_score: reports.bestPracticesScore,
+          seo_score: reports.seoScore,
+          lcp: reports.lcp,
+          tbt: reports.tbt,
+          cls: reports.cls,
+          fcp: reports.fcp,
+          speed_index: reports.speedIndex,
+          total_byte_weight: reports.totalByteWeight,
+          screenshot: reports.screenshot,
+        })
+        .from(reports)
+        .where(inArray(reports.taskId, taskIds))
+        .orderBy(desc(reports.createdAt))
+
+      const seen = new Set<string>()
+      latestReports = reportRows.filter((r) => {
+        const key = `${r.url}-${r.device}-${r.location || 'us-east'}`
+        if (seen.has(key)) return false
+        seen.add(key)
+        return true
+      })
+
+      const reportsMap: Record<string, LatestReport[]> = {}
+      reportRows.forEach((r) => {
         const key = `${r.url}-${r.device}-${r.location || 'us-east'}`
         if (!reportsMap[key]) reportsMap[key] = []
         reportsMap[key].push(r)
-    })
-    
-    // Sort each group by date desc
-    const reportsHistory: Record<string, any[]> = {}
-    Object.keys(reportsMap).forEach(key => {
-        reportsHistory[key] = reportsMap[key]
-            .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
-            .slice(0, 10) // Keep last 10
-            .reverse() // Oldest to newest for chart
-    })
+      })
 
-    // Add reportsHistory to response
-    res.json({ success: true, data: { ...project, history, latestReports, reportsHistory, runningTask } })
-  } else {
-      res.json({ success: true, data: { ...project, history, latestReports, reportsHistory: {}, runningTask } })
+      const sortedHistory: Record<string, LatestReport[]> = {}
+      Object.keys(reportsMap).forEach((key) => {
+        sortedHistory[key] = reportsMap[key]
+          .sort((a, b) => {
+            const aDate = (a as Record<string, unknown>).created_at
+            const bDate = (b as Record<string, unknown>).created_at
+            return new Date(String(bDate)).getTime() - new Date(String(aDate)).getTime()
+          })
+          .slice(0, 10)
+          .reverse()
+      })
+      reportsHistory = sortedHistory
+    }
+
+    res.json({
+      success: true,
+      data: { ...project, history, latestReports, reportsHistory, runningTask },
+    })
+  } catch (error) {
+    console.error('Failed to get project detail', error)
+    res
+      .status(500)
+      .json({
+        success: false,
+        error: (error as Error).message || 'Failed to get project detail',
+      })
   }
 })
 
@@ -226,76 +277,73 @@ router.get('/:id', async (req, res) => {
 router.put('/:id', async (req, res) => {
   const { id } = req.params
   const { name, description, urls, config } = req.body
+  try {
+    const newDefaultConfig = config ?? req.body.default_config ?? {}
 
-  const { data, error } = await supabase
-    .from('projects')
-    .update({
-      name,
-      description,
-      urls,
-      default_config: config,
-      updated_at: new Date().toISOString()
-    })
-    .eq('id', id)
-    .select()
-    .single()
+    const urlsJson = JSON.stringify(urls || [])
+    const configJson = JSON.stringify(newDefaultConfig || {})
 
-  if (error) {
-    return res.status(500).json({ success: false, error: error.message })
+    const result = (await db.execute(sql`
+      update projects
+      set
+        name = ${name},
+        description = ${description ?? null},
+        urls = ${urlsJson}::jsonb,
+        default_config = ${configJson}::jsonb,
+        updated_at = now()
+      where id = ${id}
+      returning
+        id,
+        name,
+        description,
+        urls,
+        default_config,
+        created_at,
+        updated_at
+    `)) as unknown as { rows: Record<string, unknown>[] }
+
+    const updated = result.rows?.[0]
+    if (!updated) return res.status(404).json({ success: false, error: 'Project not found' })
+    res.json({ success: true, data: updated })
+  } catch (error) {
+    console.error('Failed to update project', error)
+    res.status(500).json({ success: false, error: (error as Error).message || 'Failed to update project' })
   }
-
-  res.json({ success: true, data })
 })
 
 // Delete project
 router.delete('/:id', async (req, res) => {
   const { id } = req.params
-  const { error } = await supabase
-    .from('projects')
-    .delete()
-    .eq('id', id)
-
-  if (error) {
-    return res.status(500).json({ success: false, error: error.message })
+  try {
+    const deleted = await db.delete(projects).where(eq(projects.id, id)).returning({ id: projects.id })
+    if (deleted.length === 0) return res.status(404).json({ success: false, error: 'Project not found' })
+    res.json({ success: true, message: 'Project deleted' })
+  } catch (error) {
+    console.error('Failed to delete project', error)
+    res.status(500).json({ success: false, error: (error as Error).message || 'Failed to delete project' })
   }
-
-  res.json({ success: true, message: 'Project deleted' })
 })
 
 // Stop running task
 router.post('/:id/stop-run', async (req, res) => {
   const { id } = req.params
-  
-  // Find the latest running task for this project
-  const { data: runningTasks, error: findError } = await supabase
-    .from('tasks')
-    .select('id')
-    .eq('project_id', id)
-    .in('status', ['running', 'pending'])
-    .order('created_at', { ascending: false })
-    .limit(1)
+  try {
+    const running = await db
+      .select({ id: tasks.id })
+      .from(tasks)
+      .where(and(eq(tasks.projectId, id), inArray(tasks.status, ['running', 'pending'])))
+      .orderBy(desc(tasks.createdAt))
+      .limit(1)
 
-  if (findError) {
-    return res.status(500).json({ success: false, error: findError.message })
+    const task = running[0]
+    if (!task?.id) return res.json({ success: false, message: 'No running task found' })
+
+    await taskRunner.cancelTask(task.id)
+    return res.json({ success: true, message: 'Task cancellation requested' })
+  } catch (error) {
+    console.error('Failed to stop running task', error)
+    res.status(500).json({ success: false, error: (error as Error).message || 'Failed to stop running task' })
   }
-
-  if (runningTasks && runningTasks.length > 0) {
-      const taskId = runningTasks[0].id
-      
-      // Update to cancelled
-      const { error: updateError } = await supabase
-        .from('tasks')
-        .update({ status: 'cancelled' })
-        .eq('id', taskId)
-        
-      if (updateError) {
-        return res.status(500).json({ success: false, error: updateError.message })
-      }
-      
-      return res.json({ success: true, message: 'Task cancelled' })
-  }
-
-  res.json({ success: false, message: 'No running task found' })
 })
 
 export default router
