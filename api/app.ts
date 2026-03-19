@@ -15,6 +15,8 @@ import authRoutes from './routes/auth.js'
 import projectRoutes from './routes/projects.js'
 import taskRoutes from './routes/tasks.js'
 import reportRoutes from './routes/reports.js'
+import { db } from './db.js'
+import { sql } from 'drizzle-orm'
 
 // for esm mode
 const __filename = fileURLToPath(import.meta.url)
@@ -22,6 +24,13 @@ const __dirname = path.dirname(__filename)
 
 // load env
 dotenv.config()
+
+// Run one-time migrations
+db.execute(sql`ALTER TABLE reports ADD COLUMN IF NOT EXISTS source varchar(20) DEFAULT 'local'`)
+  .catch((e) => console.error('[Migration] Failed to add source column:', e))
+
+db.execute(sql`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS status_text varchar(500)`)
+  .catch((e) => console.error('[Migration] Failed to add status_text column:', e))
 
 const app: express.Application = express()
 
@@ -54,7 +63,8 @@ app.use(
  * Production Static Files
  */
 if (process.env.NODE_ENV === 'production') {
-  const distPath = path.join(__dirname, '../../dist')
+  // when using tsx api/server.ts, __dirname is /app/api, so dist is at /app/dist (../dist)
+  const distPath = path.join(__dirname, '../dist')
   
   // Serve static files
   app.use(express.static(distPath))

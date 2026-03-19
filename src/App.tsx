@@ -14,7 +14,18 @@ export default function App() {
     <Router>
       <Layout className="min-h-screen">
         <Header className="flex items-center">
-          <div className="text-white text-xl font-bold">Lighthouse HQ</div>
+          <div className="flex items-center gap-2">
+            <svg width="28" height="28" viewBox="0 0 28 28" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <circle cx="14" cy="14" r="13" fill="#1677ff" stroke="#4096ff" strokeWidth="1"/>
+              {/* Gauge arc */}
+              <path d="M7 18 A8 8 0 0 1 21 18" stroke="rgba(255,255,255,0.25)" strokeWidth="2.5" strokeLinecap="round" fill="none"/>
+              <path d="M7 18 A8 8 0 0 1 17.5 10.1" stroke="white" strokeWidth="2.5" strokeLinecap="round" fill="none"/>
+              {/* Needle */}
+              <line x1="14" y1="18" x2="17.8" y2="10.5" stroke="#52c41a" strokeWidth="2" strokeLinecap="round"/>
+              <circle cx="14" cy="18" r="1.8" fill="white"/>
+            </svg>
+            <span className="text-white text-base font-semibold tracking-wide">Lighthouse HQ</span>
+          </div>
         </Header>
         <Content>
           <Routes>

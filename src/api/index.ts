@@ -36,6 +36,12 @@ export const api = {
       })
       return res.json()
     },
+    clearHistory: async (id: string) => {
+      const res = await fetch(`${API_BASE_URL}/projects/${id}/history`, {
+        method: 'DELETE',
+      })
+      return res.json()
+    },
   },
   tasks: {
     create: async (data: any) => {

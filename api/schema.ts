@@ -66,6 +66,7 @@ export const reports = pgTable('reports', {
   url: varchar('url', { length: 500 }).notNull(),
   device: text('device'),
   location: text('location'),
+  source: varchar('source', { length: 20 }).notNull().default('local'),
   status: varchar('status', { length: 20 }).notNull().default('pending'),
   errorMessage: text('error_message'),
   lighthouseData: jsonb('lighthouse_data').notNull(),

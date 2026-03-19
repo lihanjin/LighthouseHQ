@@ -1,0 +1,22 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    ports:
+      - "5134:5173"  # Vite HMR
+      - "3001:3001"  # API
+    volumes:
+      - .:/app                  # 挂载源码，改文件立即生效
+    env_file:
+      - .env
+    environment:
+      - PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+    deploy:
+      resources:
+        limits:
+          cpus: '8'
+          memory: 8G
+        reservations:
+          cpus: '4'
+          memory: 4G

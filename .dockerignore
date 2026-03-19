@@ -3,6 +3,6 @@ node_modules
 dist
 .git
 .trae
-.env
+#.env
 .DS_Store
 coverage

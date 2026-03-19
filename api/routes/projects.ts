@@ -210,6 +210,7 @@ router.get('/:id', async (req, res) => {
           url: reports.url,
           device: reports.device,
           location: reports.location,
+          source: reports.source,
           status: reports.status,
           error_message: reports.errorMessage,
           created_at: reports.createdAt,
@@ -231,7 +232,7 @@ router.get('/:id', async (req, res) => {
 
       const seen = new Set<string>()
       latestReports = reportRows.filter((r) => {
-        const key = `${r.url}-${r.device}-${r.location || 'us-east'}`
+        const key = `${r.url}-${r.device}-${(r as any).source || 'local'}`
         if (seen.has(key)) return false
         seen.add(key)
         return true
@@ -239,7 +240,7 @@ router.get('/:id', async (req, res) => {
 
       const reportsMap: Record<string, LatestReport[]> = {}
       reportRows.forEach((r) => {
-        const key = `${r.url}-${r.device}-${r.location || 'us-east'}`
+        const key = `${r.url}-${r.device}-${(r as any).source || 'local'}`
         if (!reportsMap[key]) reportsMap[key] = []
         reportsMap[key].push(r)
       })
@@ -321,6 +322,28 @@ router.delete('/:id', async (req, res) => {
   } catch (error) {
     console.error('Failed to delete project', error)
     res.status(500).json({ success: false, error: (error as Error).message || 'Failed to delete project' })
+  }
+})
+
+// Clear all tasks and reports for a project
+router.delete('/:id/history', async (req, res) => {
+  const { id } = req.params
+  try {
+    const projectTasks = await db
+      .select({ id: tasks.id })
+      .from(tasks)
+      .where(eq(tasks.projectId, id))
+
+    if (projectTasks.length > 0) {
+      const taskIds = projectTasks.map((t) => t.id)
+      await db.delete(reports).where(inArray(reports.taskId, taskIds))
+      await db.delete(tasks).where(eq(tasks.projectId, id))
+    }
+
+    res.json({ success: true, message: 'History cleared' })
+  } catch (error) {
+    console.error('Failed to clear history', error)
+    res.status(500).json({ success: false, error: (error as Error).message || 'Failed to clear history' })
   }
 })
 

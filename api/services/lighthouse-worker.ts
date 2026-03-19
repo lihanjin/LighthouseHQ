@@ -1,11 +1,44 @@
 import puppeteer from 'puppeteer'
 import lighthouse from 'lighthouse'
 import { URL } from 'url'
+import https from 'node:https'
 import { db } from '../db.js'
 import { reports, tasks } from '../schema.js'
 import { eq, sql } from 'drizzle-orm'
 
 const CRUX_API_KEY = process.env.CRUX_API_KEY || process.env.GOOGLE_API_KEY
+
+const PSI_API_KEY = process.env.GOOGLE_API_KEY || process.env.PSI_API_KEY
+const PSI_ENDPOINT = 'https://www.googleapis.com/pagespeedonline/v5/runPagespeed'
+
+async function callPSI(url: string, strategy: 'DESKTOP' | 'MOBILE'): Promise<any> {
+  const params = new URLSearchParams({ url, strategy })
+  if (PSI_API_KEY) params.append('key', PSI_API_KEY)
+  for (const cat of ['performance', 'accessibility', 'best-practices', 'seo']) {
+    params.append('category', cat)
+  }
+
+  return new Promise((resolve, reject) => {
+    const fullUrl = `${PSI_ENDPOINT}?${params}`
+    const parsed = new URL(fullUrl)
+    const req = https.request(
+      { hostname: parsed.hostname, path: parsed.pathname + parsed.search, method: 'GET' },
+      (res: any) => {
+        const chunks: Buffer[] = []
+        res.on('data', (chunk: Buffer) => { chunks.push(chunk) })
+        res.on('end', () => {
+          const data = Buffer.concat(chunks).toString('utf8')
+          if (res.statusCode !== 200) return reject(new Error(`PSI API HTTP ${res.statusCode}`))
+          try { resolve(JSON.parse(data)) } catch (e) { reject(e) }
+        })
+      }
+    )
+    const timer = setTimeout(() => { req.destroy(); reject(new Error('PSI timeout')) }, 120000)
+    req.on('error', (e) => { clearTimeout(timer); reject(e) })
+    req.on('close', () => clearTimeout(timer))
+    req.end()
+  })
+}
 
 let currentBrowser: any = null
 let cancelled = false
@@ -62,6 +95,11 @@ async function runTask(config: any) {
   cancelled = false
 
   console.log(`[Worker Task ${taskId}] Starting... Global Location: ${globalLocation || 'default'}`)
+
+  // Ensure source column exists (one-time migration)
+  try {
+    await db.execute(sql`ALTER TABLE reports ADD COLUMN IF NOT EXISTS source varchar(20) DEFAULT 'local'`)
+  } catch {}
 
   try {
     const currentTaskRows = await db
@@ -187,8 +225,8 @@ async function runTask(config: any) {
               : String(currentLocation || 'us-east')
 
           const created = (await db.execute(sql`
-            insert into reports (task_id, url, device, location, status, lighthouse_data)
-            values (${taskId}, ${url}, ${currentDevice}, ${normalizedLocation}, 'pending', ${JSON.stringify({})}::jsonb)
+            insert into reports (task_id, url, device, location, source, status, lighthouse_data)
+            values (${taskId}, ${url}, ${currentDevice}, ${normalizedLocation}, 'local', 'pending', ${JSON.stringify({})}::jsonb)
             returning id
           `)) as unknown as { rows: Array<{ id: string }> }
 
@@ -201,6 +239,7 @@ async function runTask(config: any) {
           try {
             const safeUrl = url.trim()
             console.log(`[Worker Task ${taskId}] Auditing ${safeUrl} on ${currentDevice} from ${currentLocation}...`)
+            await db.execute(sql`UPDATE tasks SET status_text = ${`本地审计: ${safeUrl} (${currentDevice})`} WHERE id = ${taskId}`)
 
             // Ensure browser is healthy before each audit
             if (!currentBrowser || !currentBrowser.connected) {
@@ -224,7 +263,14 @@ async function runTask(config: any) {
                 currentDevice === 'mobile'
                   ? undefined
                   : { mobile: false, width: 1350, height: 940, deviceScaleFactor: 1, disabled: false },
-              throttling: {},
+              throttlingMethod: 'simulate',
+              throttling: (() => {
+                const custom = config.authData?.throttling
+                if (custom?.cpuSlowdownMultiplier !== undefined) return custom
+                return currentDevice === 'mobile'
+                  ? { rttMs: 150, throughputKbps: 1638.4, cpuSlowdownMultiplier: 4 }
+                  : { rttMs: 40, throughputKbps: 10240, cpuSlowdownMultiplier: 3 }
+              })(),
               onlyCategories: ['performance', 'accessibility', 'best-practices', 'seo'],
               locale: 'zh',
             })
@@ -316,6 +362,11 @@ async function runTask(config: any) {
                 error_message = null
               where id = ${reportRecord.id}
             `)
+
+            // Request PSI from parent process (avoids ESM fetch issues)
+            if (process.send) {
+              process.send({ type: 'psi_request', taskId, url, device: currentDevice })
+            }
           } catch (err: any) {
             if (err?.message === 'Task Cancelled') throw err
             console.error(`[Worker Task ${taskId}] Failed to audit ${url}:`, err)

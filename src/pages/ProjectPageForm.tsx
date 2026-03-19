@@ -44,13 +44,13 @@ export default function ProjectPageForm() {
     fetchProject()
   }, [id])
 
-  const fetchProject = async () => {
+  const fetchProject = async (): Promise<Project | null> => {
     try {
       const res = await api.projects.get(id!)
       if (res.success) {
         const proj = res.data
         setProject(proj)
-        
+
         // Set initial values
         if (isEdit) {
           const index = parseInt(editIndex!)
@@ -59,11 +59,9 @@ export default function ProjectPageForm() {
           if (target) {
             const pageData = typeof target === 'string' ? { url: target, title: '' } : target
             form.setFieldsValue({
-              pages: [pageData], // Only show the one being edited
-              // Keep config fields but maybe disable them or hide them if we only edit URL?
-              // For now, let's allow editing config too as it seems to be global
+              pages: [pageData],
               devices: proj.default_config?.device || ['desktop'],
-              location: Array.isArray(proj.default_config?.location) ? proj.default_config.location : [proj.default_config?.location || 'us-east'],
+              location: ['us-east'],
               frequency: '24h',
               cookies: proj.default_config?.cookies ? JSON.stringify(proj.default_config.cookies) : undefined,
               localStorage: proj.default_config?.localStorage ? JSON.stringify(proj.default_config.localStorage) : undefined,
@@ -71,18 +69,22 @@ export default function ProjectPageForm() {
             })
           }
         } else {
-          // Add mode
           form.setFieldsValue({
             devices: proj.default_config?.device || ['desktop'],
-            location: Array.isArray(proj.default_config?.location) ? proj.default_config.location : [proj.default_config?.location || 'us-east'],
+            location: ['us-east'],
             frequency: '24h',
-            pages: [{}] // Start with one empty row
+            pages: [{}]
           })
         }
+        return proj
+      } else {
+        message.error('获取项目信息失败：' + (res.error || '未知错误'))
+        return null
       }
     } catch (error) {
       console.error(error)
-      message.error('获取项目信息失败')
+      message.error('获取项目信息失败，请检查网络连接')
+      return null
     }
   }
 
@@ -90,9 +92,10 @@ export default function ProjectPageForm() {
     try {
       const values = await form.validateFields()
 
-      if (!project) {
-        message.error('项目信息尚未加载完成，请稍后重试')
-        return
+      let currentProject = project
+      if (!currentProject) {
+        currentProject = await fetchProject()
+        if (!currentProject) return
       }
       setLoading(true)
 
@@ -103,38 +106,34 @@ export default function ProjectPageForm() {
       }))
 
       let allPages: ProjectUrlItem[] = []
-      const existingPages = (project.urls || []).map((u: string | ProjectUrlItem) =>
+      const existingPages = (currentProject.urls || []).map((u: string | ProjectUrlItem) =>
         typeof u === 'string' ? { url: u, title: '' } : u
       )
 
       if (isEdit) {
-        // Replace the item at editIndex
         const index = parseInt(editIndex!)
         allPages = [...existingPages]
         if (index >= 0 && index < allPages.length) {
-          // We only allow editing one page at a time in edit mode
           allPages[index] = formPages[0]
         }
       } else {
-        // Append new pages
         allPages = [...existingPages, ...formPages]
       }
 
       // 2. Update Config
       const newConfig = {
-        ...project.default_config,
+        ...currentProject.default_config,
         device: values.devices,
         location: values.location,
-        // Preserve authType logic from original code
-        authType: 'custom', 
+        authType: 'custom',
         cookies: values.cookies ? JSON.parse(values.cookies) : undefined,
         localStorage: values.localStorage ? JSON.parse(values.localStorage) : undefined,
         sessionStorage: values.sessionStorage ? JSON.parse(values.sessionStorage) : undefined
       }
 
       const updateData = {
-        name: project.name,
-        description: project.description,
+        name: currentProject.name,
+        description: currentProject.description,
         urls: allPages,
         config: newConfig
       }
@@ -246,23 +245,15 @@ export default function ProjectPageForm() {
                 )}
              </Form.List>
 
-             <div className="grid grid-cols-2 gap-4">
-                 <Form.Item name="devices" label="测试设备" rules={[{ required: true }]}>
-                     <Select mode="multiple">
-                         <Option value="mobile">手机端</Option>
-                         <Option value="desktop">桌面端</Option>
-                     </Select>
-                 </Form.Item>
-                 <Form.Item name="location" label="测试位置" rules={[{ required: true }]}>
-                     <Select mode="multiple" placeholder="请选择测试位置">
-                         <Option value="us-east">🇺🇸 美国东部 (弗吉尼亚北部)</Option>
-                         <Option value="us-west">🇺🇸 美国西部 (俄勒冈)</Option>
-                         <Option value="eu-west">🇪🇺 欧洲西部 (爱尔兰)</Option>
-                         <Option value="ap-southeast">🇸🇬 亚太地区 (新加坡)</Option>
-                         <Option value="cn-north">🇨🇳 中国 (北京)</Option>
-                     </Select>
-                 </Form.Item>
-             </div>
+             <Form.Item name="devices" label="测试设备" rules={[{ required: true }]}>
+                 <Select mode="multiple">
+                     <Option value="mobile">手机端</Option>
+                     <Option value="desktop">桌面端</Option>
+                 </Select>
+             </Form.Item>
+             <Form.Item name="location" hidden initialValue={['us-east']}>
+                 <Select mode="multiple" />
+             </Form.Item>
              
              <Form.Item name="frequency" label="频率">
                  <Select>

@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { Button, Typography, message, Spin, Checkbox, Modal, Form, Select, Progress, Tooltip, Input, Table, Tabs } from 'antd'
+import { Button, Typography, message, Spin, Checkbox, Modal, Form, Select, Progress, Tooltip, Input, Table, Tabs, Popover, InputNumber, Radio } from 'antd'
 import type { CheckboxChangeEvent } from 'antd/es/checkbox'
 import { 
   PlusOutlined, 
@@ -7,7 +7,6 @@ import {
   BarChartOutlined,
   DesktopOutlined,
   MobileOutlined,
-  GlobalOutlined,
   ClockCircleOutlined,
   EditOutlined,
   PlayCircleOutlined,
@@ -123,9 +122,10 @@ interface MetricCellProps {
     history: { value: number, date: string }[];
     currentValue: number | null;
     currentDate: string | null;
+    psiValue?: number | null;
 }
 
-const MetricCell = ({ type, history, currentValue, currentDate }: MetricCellProps) => {
+const MetricCell = ({ type, history, currentValue, currentDate, psiValue }: MetricCellProps) => {
     const config = METRIC_CONFIG[type]
     
     const displayHistory = history.slice(-10) 
@@ -209,14 +209,39 @@ const MetricCell = ({ type, history, currentValue, currentDate }: MetricCellProp
                         }
                     })}
                 </div>
-                {/* Value Text */}
-                <div className="flex justify-between items-center">
+                {/* Local Value */}
+                <div className="flex items-center gap-1">
                     <Text strong className={`text-lg ${currentValue !== null ? getMetricTextColor(type, currentValue) : 'text-gray-300'}`}>
                          {currentValue !== null ? config.format(currentValue) : '-'}
                     </Text>
                 </div>
+                {/* PSI Value */}
+                <div className="flex items-center gap-1 mt-0.5">
+                    <span className={`text-xs font-semibold ${psiValue != null ? getMetricTextColor(type, psiValue) : 'text-gray-300'}`}>
+                        {psiValue != null ? config.format(psiValue) : '-'}
+                    </span>
+                </div>
             </div>
         </Tooltip>
+    )
+}
+
+const ScoreCircle = ({ score, label, size = 40 }: { score: number | null, label: string, size?: number }) => {
+    const color = score === null ? '#d9d9d9' : score >= 90 ? '#0cce6b' : score >= 50 ? '#ffa400' : '#ff4e42'
+    const textColor = score === null ? '#bfbfbf' : color
+    return (
+        <div className="flex flex-col items-center gap-0.5">
+            <div style={{
+                width: size, height: size, borderRadius: '50%',
+                border: `3px solid ${color}`,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontSize: size < 36 ? 10 : 12, fontWeight: 700, color: textColor,
+                background: 'white',
+            }}>
+                {score ?? '-'}
+            </div>
+            <span className="text-[9px] text-gray-400 leading-none">{label}</span>
+        </div>
     )
 }
 
@@ -347,6 +372,15 @@ interface PageMetrics {
     location: string;
     metrics: {
         good: { value: number | null, history: any[] };
+        accessibility: number | null;
+        bestPractices: number | null;
+        seo: number | null;
+        psiScores: {
+            performance: number | null;
+            accessibility: number | null;
+            bestPractices: number | null;
+            seo: number | null;
+        } | null;
         fcp: { value: number | null, history: any[] };
         lcp: { value: number | null, history: any[] };
         cls: { value: number | null, history: any[] };
@@ -357,6 +391,87 @@ interface PageMetrics {
         date: string | null;
     };
     screenshot: string | null;
+}
+
+const PRESETS = [
+  { label: 'PageSpeed 桌面', cpu: 3, bw: 10240, rtt: 40 },
+  { label: 'PageSpeed 移动', cpu: 4, bw: 1638.4, rtt: 150 },
+  { label: '无节流', cpu: 1, bw: 102400, rtt: 0 },
+]
+
+function ThrottlingBar({ project, onSave }: { project: any, onSave: (t: any) => Promise<void> }) {
+  const cfg = project?.default_config
+  const t = cfg?.throttling || { cpuSlowdownMultiplier: 3, throughputKbps: 10240, rttMs: 40 }
+  const [open, setOpen] = useState(false)
+  const [cpu, setCpu] = useState<number>(t.cpuSlowdownMultiplier ?? 3)
+  const [bw, setBw] = useState<number>(t.throughputKbps ?? 10240)
+  const [rtt, setRtt] = useState<number>(t.rttMs ?? 40)
+
+  useEffect(() => {
+    const th = project?.default_config?.throttling
+    if (th) {
+      setCpu(th.cpuSlowdownMultiplier ?? 3)
+      setBw(th.throughputKbps ?? 10240)
+      setRtt(th.rttMs ?? 40)
+    }
+  }, [project?.default_config?.throttling])
+  const [saving, setSaving] = useState(false)
+
+  const devList: string[] = (Array.isArray(cfg?.device) ? cfg.device : [cfg?.device]).filter(Boolean)
+  const devLabel = devList.map((d: string) => d === 'mobile' ? '移动端' : '桌面端').join(' + ') || '桌面端'
+  const locMap: Record<string, string> = { 'us-east': '🇺🇸 美国东部', 'us-west': '🇺🇸 美国西部', 'eu-west': '🇪🇺 欧洲西部', 'ap-southeast': '🇸🇬 亚太', 'cn-north': '🇨🇳 中国北部' }
+
+  const handleSave = async () => {
+    setSaving(true)
+    await onSave({ cpuSlowdownMultiplier: cpu, throughputKbps: bw, rttMs: rtt })
+    setSaving(false)
+    setOpen(false)
+  }
+
+  const popContent = (
+    <div className="w-72 space-y-4 py-1">
+      <div>
+        <div className="text-xs text-gray-400 mb-2">快速预设</div>
+        <Radio.Group size="small" onChange={e => {
+          const p = PRESETS[e.target.value]
+          setCpu(p.cpu); setBw(p.bw); setRtt(p.rtt)
+        }}>
+          {PRESETS.map((p, i) => <Radio.Button key={i} value={i}>{p.label}</Radio.Button>)}
+        </Radio.Group>
+      </div>
+      <div className="grid grid-cols-3 gap-3">
+        <div>
+          <div className="text-xs text-gray-400 mb-1">CPU 降速</div>
+          <InputNumber size="small" min={1} max={10} step={1} value={cpu} onChange={v => setCpu(v ?? 1)} addonAfter="x" className="w-full" />
+        </div>
+        <div>
+          <div className="text-xs text-gray-400 mb-1">带宽 (Kbps)</div>
+          <InputNumber size="small" min={100} max={102400} value={bw} onChange={v => setBw(v ?? 10240)} className="w-full" />
+        </div>
+        <div>
+          <div className="text-xs text-gray-400 mb-1">RTT (ms)</div>
+          <InputNumber size="small" min={0} max={500} value={rtt} onChange={v => setRtt(v ?? 40)} className="w-full" />
+        </div>
+      </div>
+      <Button type="primary" size="small" block loading={saving} onClick={handleSave}>保存</Button>
+    </div>
+  )
+
+  return (
+    <Popover content={popContent} title="节流配置" trigger="click" open={open} onOpenChange={setOpen} placement="bottomLeft">
+      <div className="flex items-center gap-3 text-xs text-gray-400 bg-gray-50 border border-gray-100 rounded-md px-4 py-2 flex-1 mx-6 cursor-pointer hover:border-blue-300 hover:bg-blue-50/30 transition-colors">
+        <span className="font-medium text-gray-500">审计配置</span>
+        <span className="w-px h-3 bg-gray-200" />
+        <span className="flex items-center gap-1"><span className="text-gray-300">设备</span><span className="text-gray-600 font-medium">{devLabel}</span></span>
+        <span className="w-px h-3 bg-gray-200" />
+        <span className="flex items-center gap-1"><span className="text-gray-300">CPU</span><span className="text-gray-600 font-medium">{t.cpuSlowdownMultiplier ?? 1}x</span></span>
+        <span className="w-px h-3 bg-gray-200" />
+        <span className="flex items-center gap-1"><span className="text-gray-300">带宽</span><span className="text-gray-600 font-medium">{((t.throughputKbps ?? 10240) / 1024).toFixed(1)} Mbps</span></span>
+        <span className="w-px h-3 bg-gray-200" />
+        <span className="flex items-center gap-1"><span className="text-gray-300">RTT</span><span className="text-gray-600 font-medium">{t.rttMs ?? 40} ms</span></span>
+      </div>
+    </Popover>
+  )
 }
 
 export default function ProjectPages() {
@@ -374,6 +489,7 @@ export default function ProjectPages() {
 
   // Settings Modal
   const [isSettingsModalVisible, setIsSettingsModalVisible] = useState(false)
+  const isSettingsModalVisibleRef = React.useRef(false)
   const [settingsForm] = Form.useForm()
 
   useEffect(() => {
@@ -410,11 +526,13 @@ export default function ProjectPages() {
                 value: item.value 
             })) : []
 
-        settingsForm.setFieldsValue({
-            cookies: transform(config.cookies, 'name'),
-            localStorage: transform(config.localStorage, 'key'),
-            sessionStorage: transform(config.sessionStorage, 'key')
-        })
+        if (!isSettingsModalVisibleRef.current) {
+          settingsForm.setFieldsValue({
+              cookies: transform(config.cookies, 'name'),
+              localStorage: transform(config.localStorage, 'key'),
+              sessionStorage: transform(config.sessionStorage, 'key')
+          })
+        }
       }
     } catch (error) {
       console.error(error)
@@ -449,6 +567,25 @@ export default function ProjectPages() {
         message.error('执行失败')
         setRunning(false)
     }
+  }
+
+  const handleClearHistory = () => {
+    Modal.confirm({
+      title: '清空历史数据',
+      content: '将删除该项目所有的跑分记录，无法恢复，确定继续？',
+      okText: '清空',
+      okType: 'danger',
+      cancelText: '取消',
+      onOk: async () => {
+        const res = await api.projects.clearHistory(id!)
+        if (res.success) {
+          message.success('历史数据已清空')
+          fetchProject(false)
+        } else {
+          message.error(res.error)
+        }
+      }
+    })
   }
 
   const handleStop = async () => {
@@ -493,7 +630,7 @@ export default function ProjectPages() {
           if (res.success) {
               message.success('配置已保存')
               setProject(res.data)
-              setIsSettingsModalVisible(false)
+              isSettingsModalVisibleRef.current = false; setIsSettingsModalVisible(false)
           } else {
               message.error(res.error)
           }
@@ -521,10 +658,11 @@ export default function ProjectPages() {
   }
 
   const getMetrics = (url: string, device: string, location: string) => {
-    const key = `${url}-${device}-${location}`
-    const report = latestReports.find((r: any) => r.url === url && r.device === device && r.location === location)
+    const localReport = latestReports.find((r: any) => r.url === url && r.device === device && (r.source === 'local' || !r.source) && r.location !== 'google-psi')
+    const psiReport = latestReports.find((r: any) => r.url === url && r.device === device && r.source === 'psi')
+    const key = `${url}-${device}-local`
     const history = reportsHistory[key] || []
-    
+
     // Sort history Oldest -> Newest
     const sortedHistory = [...history].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
 
@@ -533,38 +671,55 @@ export default function ProjectPages() {
         value: toNumberOrNull(r[field]) ?? 0,
         date: r.created_at
     }))
-    
+
     // Good (Performance Score)
     const goodHistory = sortedHistory.map(r => ({ value: toNumberOrNull(r.performance_score) ?? 0, date: r.created_at }))
-    
+
     return {
-        good: { 
-            value: report ? toNumberOrNull(report.performance_score) : null, 
-            history: goodHistory 
+        good: {
+            value: localReport ? toNumberOrNull(localReport.performance_score) : null,
+            history: goodHistory
         },
-        fcp: { 
-            value: report ? toNumberOrNull(report.fcp) : null, 
-            history: extractHistory('fcp') 
+        accessibility: localReport ? toNumberOrNull(localReport.accessibility_score) : null,
+        bestPractices: localReport ? toNumberOrNull(localReport.best_practices_score) : null,
+        seo: localReport ? toNumberOrNull(localReport.seo_score) : null,
+        psiScores: psiReport ? {
+            performance: toNumberOrNull(psiReport.performance_score),
+            accessibility: toNumberOrNull(psiReport.accessibility_score),
+            bestPractices: toNumberOrNull(psiReport.best_practices_score),
+            seo: toNumberOrNull(psiReport.seo_score),
+        } : null,
+        psiMetrics: psiReport ? {
+            fcp: toNumberOrNull(psiReport.fcp),
+            lcp: toNumberOrNull(psiReport.lcp),
+            tbt: toNumberOrNull(psiReport.tbt),
+            cls: toNumberOrNull(psiReport.cls),
+            pageWeight: toNumberOrNull(psiReport.total_byte_weight),
+        } : null,
+        psiReportId: psiReport?.id || null,
+        fcp: {
+            value: localReport ? toNumberOrNull(localReport.fcp) : null,
+            history: extractHistory('fcp')
         },
-        lcp: { 
-            value: report ? toNumberOrNull(report.lcp) : null, 
-            history: extractHistory('lcp') 
+        lcp: {
+            value: localReport ? toNumberOrNull(localReport.lcp) : null,
+            history: extractHistory('lcp')
         },
-        cls: { 
-            value: report ? toNumberOrNull(report.cls) : null, 
-            history: extractHistory('cls') 
+        cls: {
+            value: localReport ? toNumberOrNull(localReport.cls) : null,
+            history: extractHistory('cls')
         },
-        pageWeight: { 
-            value: report ? toNumberOrNull(report.total_byte_weight) : null, 
-            history: extractHistory('total_byte_weight') 
+        pageWeight: {
+            value: localReport ? toNumberOrNull(localReport.total_byte_weight) : null,
+            history: extractHistory('total_byte_weight')
         },
         tbt: {
-            value: report ? toNumberOrNull(report.tbt) : null,
+            value: localReport ? toNumberOrNull(localReport.tbt) : null,
             history: extractHistory('tbt')
         },
-        reportId: report?.id || null,
-        screenshot: report?.screenshot || null,
-        date: report?.created_at || null
+        reportId: localReport?.id || null,
+        screenshot: localReport?.screenshot || null,
+        date: localReport?.created_at || null
     }
   }
 
@@ -649,8 +804,37 @@ export default function ProjectPages() {
   }
 
   const submitBatchEdit = async () => {
-      setIsEditModalVisible(false)
-      message.success('Updated (Mock)')
+      const values = form.getFieldsValue()
+      const newDevice: string[] | undefined = values.device?.length ? values.device : undefined
+
+      if (!newDevice) {
+          setIsEditModalVisible(false)
+          return
+      }
+
+      // Get unique URLs from selected rows
+      const selectedUrls = new Set(
+          pages.filter(p => selectedRowKeys.includes(p.id)).map(p => p.url)
+      )
+
+      // Update device on matching url entries
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const newUrls = project.urls.map((u: any) => {
+          const urlStr = typeof u === 'string' ? u : u.url
+          if (!selectedUrls.has(urlStr)) return u
+          const base = typeof u === 'string' ? { url: u } : { ...u }
+          return { ...base, device: newDevice }
+      })
+
+      const res = await api.projects.update(id!, { name: project.name, description: project.description, urls: newUrls, config: project.default_config })
+      if (res.success) {
+          setProject(res.data)
+          setSelectedRowKeys([])
+          setIsEditModalVisible(false)
+          message.success('设备类型已更新')
+      } else {
+          message.error(res.error || '保存失败')
+      }
   }
   
   const handleAddPage = () => navigate(`/projects/${id}/pages/add`)
@@ -671,14 +855,46 @@ export default function ProjectPages() {
                 {running ? '执行中...' : '立即执行'}
             </Button>
             {running && <Button danger onClick={handleStop}>停止</Button>}
+            {!running && (
+              <Button icon={<DeleteOutlined />} onClick={handleClearHistory}>
+                清空历史
+              </Button>
+            )}
+            {!running && (
+              <Button
+                onClick={() => {
+                  const links = pages
+                    .filter((p: any) => p.metrics.psiReportId)
+                    .map((p: any) => `${window.location.origin}/reports/${p.metrics.psiReportId}`)
+                  if (links.length === 0) { message.warning('暂无 PageSpeed 报告，请先执行分析'); return }
+                  navigator.clipboard.writeText(links.join('\n')).then(() => message.success(`已复制 ${links.length} 条 PageSpeed 报告链接`))
+                }}
+              >
+                复制 PageSpeed 报告链接
+              </Button>
+            )}
             {project?.runningTask && (
-                <div className="flex items-center gap-2 w-64">
+                <div className="flex flex-col gap-0.5 w-72">
                     <Progress percent={project.runningTask.progress} size="small" status="active" />
+                    {(project.runningTask as any).status_text && (
+                        <span className="text-[10px] text-gray-400 truncate">{(project.runningTask as any).status_text}</span>
+                    )}
                 </div>
             )}
         </div>
-        <div className="flex items-center gap-6">
-            <Button icon={<SettingOutlined />} size="small" type="text" onClick={() => setIsSettingsModalVisible(true)} />
+        <ThrottlingBar project={project} onSave={async (throttling) => {
+            const newConfig = { ...(project.default_config || {}), throttling }
+            const res = await api.projects.update(project.id, {
+                name: project.name,
+                description: project.description,
+                urls: project.urls,
+                config: newConfig,
+            })
+            if (res.success) { setProject((p: any) => ({ ...p, default_config: newConfig })); message.success('节流配置已保存') }
+            else message.error(res.error)
+        }} />
+        <div className="flex items-center gap-6 shrink-0">
+            <Button icon={<SettingOutlined />} size="small" type="text" onClick={() => { isSettingsModalVisibleRef.current = true; setIsSettingsModalVisible(true) }} />
         </div>
       </div>
 
@@ -695,14 +911,15 @@ export default function ProjectPages() {
 
         <div className="grid grid-cols-12 gap-4 px-4 py-2 text-xs font-semibold text-gray-400 border-b border-gray-100 mb-2 items-center">
             <div className="col-span-4 flex items-center gap-3">
-                <Checkbox 
+                <Checkbox
                     checked={pages.length > 0 && selectedRowKeys.length === pages.length}
                     indeterminate={selectedRowKeys.length > 0 && selectedRowKeys.length < pages.length}
                     onChange={handleSelectAll}
                 />
                 <span>页面</span>
             </div>
-            <div className="col-span-8 grid grid-cols-5 gap-4">
+            <div className="col-span-2 text-center">本地 / PageSpeed</div>
+            <div className="col-span-6 grid grid-cols-5 gap-4">
                 <HeaderWithTooltip title="FCP" metricKey="fcp" />
                 <HeaderWithTooltip title="LCP" metricKey="lcp" />
                 <HeaderWithTooltip title="TBT" metricKey="tbt" />
@@ -720,6 +937,7 @@ export default function ProjectPages() {
                 pages.map((page) => (
                     <div key={page.id} className={`grid grid-cols-12 gap-4 px-4 py-3 bg-white border rounded hover:shadow-sm transition-shadow items-center ${selectedRowKeys.includes(page.id) ? 'border-blue-200 bg-blue-50/20' : 'border-gray-100'}`}>
                         <div className="col-span-4 flex items-start gap-4">
+
                             <div className="pt-8">
                                 <Checkbox 
                                     checked={selectedRowKeys.includes(page.id)}
@@ -771,19 +989,38 @@ export default function ProjectPages() {
                                         {page.device === 'mobile' ? '移动端' : '桌面端'}
                                     </span>
                                     <span>|</span>
-                                    <span className="flex items-center gap-1"><GlobalOutlined /> {getLocationName(page.location)}</span>
-                                    <span>|</span>
                                     <span className="flex items-center gap-1"><ClockCircleOutlined /> 24h</span>
                                 </div>
                             </div>
                         </div>
 
-                        <div className="col-span-8 grid grid-cols-5 gap-4">
-                            <MetricCell type="fcp" history={page.metrics.fcp.history} currentValue={page.metrics.fcp.value} currentDate={page.metrics.date} />
-                            <MetricCell type="lcp" history={page.metrics.lcp.history} currentValue={page.metrics.lcp.value} currentDate={page.metrics.date} />
-                            <MetricCell type="tbt" history={page.metrics.tbt?.history || []} currentValue={page.metrics.tbt?.value ?? null} currentDate={page.metrics.date} />
-                            <MetricCell type="cls" history={page.metrics.cls.history} currentValue={page.metrics.cls.value} currentDate={page.metrics.date} />
-                            <MetricCell type="pageWeight" history={page.metrics.pageWeight.history} currentValue={page.metrics.pageWeight.value} currentDate={page.metrics.date} />
+                        <div className="col-span-2 flex flex-col gap-2 justify-center">
+                            <div className="flex items-center gap-1.5">
+                                <span className="text-[9px] text-gray-400 w-6 shrink-0">本地</span>
+                                <div className="flex gap-1">
+                                    <ScoreCircle score={page.metrics.good.value} label="性能" size={32} />
+                                    <ScoreCircle score={page.metrics.accessibility} label="无障碍" size={32} />
+                                    <ScoreCircle score={page.metrics.bestPractices} label="最佳" size={32} />
+                                    <ScoreCircle score={page.metrics.seo} label="SEO" size={32} />
+                                </div>
+                            </div>
+                            <div className="flex items-center gap-1.5">
+                                <span className="text-[9px] text-blue-400 w-6 shrink-0">PSI</span>
+                                <div className="flex gap-1">
+                                    <ScoreCircle score={page.metrics.psiScores?.performance ?? null} label="性能" size={32} />
+                                    <ScoreCircle score={page.metrics.psiScores?.accessibility ?? null} label="无障碍" size={32} />
+                                    <ScoreCircle score={page.metrics.psiScores?.bestPractices ?? null} label="最佳" size={32} />
+                                    <ScoreCircle score={page.metrics.psiScores?.seo ?? null} label="SEO" size={32} />
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="col-span-6 grid grid-cols-5 gap-4">
+                            <MetricCell type="fcp" history={page.metrics.fcp.history} currentValue={page.metrics.fcp.value} currentDate={page.metrics.date} psiValue={page.metrics.psiMetrics?.fcp ?? null} />
+                            <MetricCell type="lcp" history={page.metrics.lcp.history} currentValue={page.metrics.lcp.value} currentDate={page.metrics.date} psiValue={page.metrics.psiMetrics?.lcp ?? null} />
+                            <MetricCell type="tbt" history={page.metrics.tbt?.history || []} currentValue={page.metrics.tbt?.value ?? null} currentDate={page.metrics.date} psiValue={page.metrics.psiMetrics?.tbt ?? null} />
+                            <MetricCell type="cls" history={page.metrics.cls.history} currentValue={page.metrics.cls.value} currentDate={page.metrics.date} psiValue={page.metrics.psiMetrics?.cls ?? null} />
+                            <MetricCell type="pageWeight" history={page.metrics.pageWeight.history} currentValue={page.metrics.pageWeight.value} currentDate={page.metrics.date} psiValue={page.metrics.psiMetrics?.pageWeight ?? null} />
                         </div>
                     </div>
                 ))
@@ -820,7 +1057,7 @@ export default function ProjectPages() {
           title="项目配置 (Global Settings)" 
           open={isSettingsModalVisible} 
           onOk={handleSettingsSave} 
-          onCancel={() => setIsSettingsModalVisible(false)}
+          onCancel={() => { isSettingsModalVisibleRef.current = false; setIsSettingsModalVisible(false) }}
           width={700}
           destroyOnClose={false}
       >
